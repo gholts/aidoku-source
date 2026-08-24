@@ -1,0 +1,21 @@
+[package]
+name = "lightnovelfun"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aidoku = { git = "https://github.com/Aidoku/aidoku-rs.git", features = ["json"] }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+strip = true
+lto = true

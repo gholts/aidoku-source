@@ -1,0 +1,11 @@
+{
+	"info": {
+		"id": "zh.lightnovelfun",
+		"name": "LightNovel.fun",
+		"version": 2,
+		"url": "https://www.lightnovel.fun",
+		"contentRating": 1,
+		"languages": ["zh"],
+		"minAppVersion": "0.8.3"
+	}
+}

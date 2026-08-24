@@ -1,0 +1,11 @@
+{
+	"info": {
+		"id": "zh.twlinovelib",
+		"name": "嗶哩輕小說",
+		"version": 3,
+		"url": "https://tw.linovelib.com",
+		"contentRating": 1,
+		"languages": ["zh"],
+		"minAppVersion": "0.8.3"
+	}
+}

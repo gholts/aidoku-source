@@ -1,0 +1,11 @@
+{
+	"info": {
+		"id": "zh.wenku8",
+		"name": "輕小說文庫",
+		"version": 5,
+		"url": "https://www.wenku8.net",
+		"contentRating": 1,
+		"languages": ["zh"],
+		"minAppVersion": "0.8.3"
+	}
+}
