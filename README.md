@@ -1,6 +1,10 @@
-# Aidoku Novel Sources
+<img src="https://github.com/user-attachments/assets/af090bbc-4093-4ec1-bebc-ee1e9e13b3aa" width="100px" align="left">
+
+### `Aidoku source`
 
 Chinese novel sources for [Aidoku](https://github.com/Aidoku/Aidoku), built with [aidoku-rs](https://github.com/Aidoku/aidoku-rs).
+
+### `list`:
 
 | Source         |                 ID |
 | -------------- | -----------------: |
@@ -8,27 +12,23 @@ Chinese novel sources for [Aidoku](https://github.com/Aidoku/Aidoku), built with
 | 嗶哩輕小說     |   `zh.twlinovelib` |
 | 輕小說文庫     |        `zh.wenku8` |
 
-Aidoku source URL:
+### `source URL`:
 
 ```text
 https://gholts.github.io/aidoku-source/index.min.json
 ```
 
-Pushes to `main` that change `sources/**` automatically build and publish this source list.
-
-## Local checks
+### `local check`
 
 ```sh
-cd sources/zh.wenku8
+cd sources/<source>
 cargo fmt --all --check
 cargo clippy
 aidoku package
 aidoku verify package.aix
 ```
 
-Run equivalent commands for each source directory.
-
-## License
+### `license`
 
 Licensed under Apache-2.0.
 
