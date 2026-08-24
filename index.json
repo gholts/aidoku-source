@@ -1,0 +1,44 @@
+{
+  "name": "Aidoku Novel Sources",
+  "sources": [
+    {
+      "id": "zh.lightnovelfun",
+      "name": "LightNovel.fun",
+      "version": 2,
+      "iconURL": "icons/zh.lightnovelfun-v2.png",
+      "downloadURL": "sources/zh.lightnovelfun-v2.aix",
+      "languages": [
+        "zh"
+      ],
+      "contentRating": 1,
+      "baseURL": "https://www.lightnovel.fun",
+      "minAppVersion": "0.8.3"
+    },
+    {
+      "id": "zh.twlinovelib",
+      "name": "嗶哩輕小說",
+      "version": 3,
+      "iconURL": "icons/zh.twlinovelib-v3.png",
+      "downloadURL": "sources/zh.twlinovelib-v3.aix",
+      "languages": [
+        "zh"
+      ],
+      "contentRating": 1,
+      "baseURL": "https://tw.linovelib.com",
+      "minAppVersion": "0.8.3"
+    },
+    {
+      "id": "zh.wenku8",
+      "name": "輕小說文庫",
+      "version": 5,
+      "iconURL": "icons/zh.wenku8-v5.png",
+      "downloadURL": "sources/zh.wenku8-v5.aix",
+      "languages": [
+        "zh"
+      ],
+      "contentRating": 1,
+      "baseURL": "https://www.wenku8.net",
+      "minAppVersion": "0.8.3"
+    }
+  ]
+}
