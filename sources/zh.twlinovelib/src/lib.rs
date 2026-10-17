@@ -134,7 +134,7 @@ impl DeepLinkHandler for TwLinovelib {
 }
 
 fn get_api<T: DeserializeOwned + Default>(path: &str) -> Result<T> {
-	let response = Request::get(format!("{API_URL}{path}"))?
+	let response = Request::get(format!("{API_URL}/api{path}"))?
 		.header("Accept", "application/json")
 		.send()?;
 	if !(200..300).contains(&response.status_code()) {
@@ -204,10 +204,16 @@ fn top_item_to_manga(item: &TopItem) -> Manga {
 }
 
 fn fetch_chapters(novel: &ApiNovel) -> Result<Vec<Chapter>> {
+	if !novel.done {
+		bail!("Linovelib is still caching this book; try updating it again later");
+	}
 	let mut chapters = Vec::new();
 	let mut ordinal = 0_f32;
 	for (volume_index, volume) in novel.volumes.iter().enumerate() {
 		let detail: ApiVolume = get_api(&format!("/bili/novel/{}/vol/{}", novel.nid, volume.vid))?;
+		if !detail.done {
+			bail!("Linovelib is still caching this volume; try updating it again later");
+		}
 		let volume_title = if detail.name.is_empty() {
 			&volume.title
 		} else {
@@ -396,6 +402,8 @@ struct TopItem {
 #[derive(Default, Deserialize)]
 struct ApiNovel {
 	#[serde(default)]
+	done: bool,
+	#[serde(default)]
 	nid: u64,
 	#[serde(default)]
 	name: String,
@@ -430,6 +438,8 @@ struct ApiVolumeRef {
 #[derive(Default, Deserialize)]
 struct ApiVolume {
 	#[serde(default)]
+	done: bool,
+	#[serde(default)]
 	name: String,
 	#[serde(default)]
 	chapters: Vec<ApiChapterRef>,
@@ -450,3 +460,19 @@ struct ApiChapter {
 }
 
 register_source!(TwLinovelib, DeepLinkHandler);
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use aidoku_test::aidoku_test;
+
+	#[aidoku_test]
+	fn incomplete_api_cache_cannot_replace_a_saved_catalog() {
+		let novel = ApiNovel {
+			nid: 5455,
+			done: false,
+			..Default::default()
+		};
+		assert!(fetch_chapters(&novel).is_err());
+	}
+}
