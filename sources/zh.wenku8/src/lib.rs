@@ -63,9 +63,8 @@ impl Source for Wenku8 {
 		needs_details: bool,
 		needs_chapters: bool,
 	) -> Result<Manga> {
-		let detail_url = format!("{BASE_URL}/book/{}.htm", manga.key);
-		let detail = request_html(&detail_url)?;
 		if needs_details {
+			let detail = request_html(&format!("{BASE_URL}/book/{}.htm", manga.key))?;
 			let details = parse_detail(&detail, &manga.key)
 				.ok_or_else(|| error!("novel details not found"))?;
 			manga.copy_from(details);
@@ -79,7 +78,7 @@ impl Source for Wenku8 {
 				.parse::<u32>()
 				.map_err(|_| error!("invalid Wenku8 novel ID"))?;
 			let catalog_url = format!("{BASE_URL}/modules/article/reader.php?aid={novel_id}");
-			let chapters = parse_chapters(&request_html(&catalog_url)?, &catalog_url);
+			let chapters = parse_chapters(&request_html(&catalog_url)?);
 			if chapters.is_empty() {
 				bail!("Wenku8 catalog returned no chapters");
 			}
@@ -136,13 +135,33 @@ impl ImageRequestProvider for Wenku8 {
 
 impl DeepLinkHandler for Wenku8 {
 	fn handle_deep_link(&self, url: String) -> Result<Option<DeepLinkResult>> {
-		let path = url
-			.split(['?', '#'])
-			.next()
-			.unwrap_or(&url)
-			.rsplit("wenku8.net")
-			.next()
-			.unwrap_or("");
+		let Some(path) = url
+			.strip_prefix(BASE_URL)
+			.or_else(|| url.strip_prefix("http://www.wenku8.net"))
+		else {
+			return Ok(None);
+		};
+		let path = path.split('#').next().unwrap_or(path);
+		let (path, query) = path.split_once('?').unwrap_or((path, ""));
+		if path == "/modules/article/reader.php" {
+			let parameter = |name| {
+				query
+					.split('&')
+					.filter_map(|pair| pair.split_once('='))
+					.find_map(|(key, value)| (key == name).then_some(value))
+			};
+			let Some(book) = parameter("aid").filter(|value| is_id(value)) else {
+				return Ok(None);
+			};
+			return Ok(match parameter("cid") {
+				Some(chapter) if is_id(chapter) => Some(DeepLinkResult::Chapter {
+					manga_key: book.into(),
+					key: chapter_key(book, chapter),
+				}),
+				None => Some(DeepLinkResult::Manga { key: book.into() }),
+				_ => None,
+			});
+		}
 		if let Some(key) = path
 			.strip_prefix("/book/")
 			.and_then(|key| key.strip_suffix(".htm"))
@@ -153,21 +172,28 @@ impl DeepLinkHandler for Wenku8 {
 		let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
 		if segments.len() == 4
 			&& segments[0] == "novel"
+			&& is_id(segments[1])
 			&& is_id(segments[2])
-			&& segments[3].ends_with(".htm")
+			&& let Some(chapter) = segments[3].strip_suffix(".htm")
 		{
-			let key = if path.starts_with('/') {
-				path.into()
-			} else {
-				format!("/{path}")
-			};
-			return Ok(Some(DeepLinkResult::Chapter {
-				manga_key: segments[2].into(),
-				key,
-			}));
+			if chapter == "index" {
+				return Ok(Some(DeepLinkResult::Manga {
+					key: segments[2].into(),
+				}));
+			}
+			if is_id(chapter) {
+				return Ok(Some(DeepLinkResult::Chapter {
+					manga_key: segments[2].into(),
+					key: chapter_key(segments[2], chapter),
+				}));
+			}
 		}
 		Ok(None)
 	}
+}
+
+fn chapter_key(book: &str, chapter: &str) -> String {
+	format!("{BASE_URL}/modules/article/reader.php?aid={book}&cid={chapter}")
 }
 
 fn request_html(url: &str) -> Result<Document> {
@@ -341,7 +367,7 @@ fn extract_between(text: &str, start: &str, end: &str) -> Option<String> {
 	)
 }
 
-fn parse_chapters(html: &Document, catalog_url: &str) -> Vec<Chapter> {
+fn parse_chapters(html: &Document) -> Vec<Chapter> {
 	let mut volume = String::new();
 	let mut ordinal = 0_f32;
 	let mut chapters = Vec::new();
@@ -357,10 +383,9 @@ fn parse_chapters(html: &Document, catalog_url: &str) -> Vec<Chapter> {
 		let Some(link) = cell.select_first("a") else {
 			continue;
 		};
-		let Some(href) = link.attr("href").or_else(|| link.attr("abs:href")) else {
+		let Some(url) = link.attr("abs:href") else {
 			continue;
 		};
-		let url = resolve_url(catalog_url, &href);
 		if !url.contains("reader.php?") || !url.contains("cid=") {
 			continue;
 		}
@@ -384,19 +409,6 @@ fn parse_chapters(html: &Document, catalog_url: &str) -> Vec<Chapter> {
 	}
 	chapters.reverse();
 	chapters
-}
-
-fn resolve_url(base: &str, href: &str) -> String {
-	if href.starts_with("http://") || href.starts_with("https://") {
-		return href.to_string();
-	}
-	if href.starts_with('/') {
-		return format!("{BASE_URL}{href}");
-	}
-	let directory = base
-		.rsplit_once('/')
-		.map_or(base, |(directory, _)| directory);
-	format!("{directory}/{href}")
 }
 
 fn detail_book_key(html: &Document) -> Option<String> {
@@ -501,7 +513,7 @@ mod tests {
 		let (data, _, _) = GBK.encode(fixture);
 		let url = "https://www.wenku8.net/modules/article/reader.php?aid=1";
 		let html = parse_html_data(&data, url).unwrap();
-		let chapters = parse_chapters(&html, url);
+		let chapters = parse_chapters(&html);
 
 		assert_eq!(chapters.len(), 1);
 		assert_eq!(chapters[0].title.as_deref(), Some("第一卷 — 第一章"));
@@ -509,6 +521,66 @@ mod tests {
 			chapters[0].key,
 			"https://www.wenku8.net/modules/article/reader.php?aid=1&cid=2"
 		);
+	}
+
+	#[aidoku_test]
+	fn deep_links_match_reader_catalog_keys() {
+		let html = parse_html_data(
+			br#"<table>
+				<tr><td class="vcss">Volume 1</td></tr>
+				<tr><td class="ccss"><a href="reader.php?aid=2172&amp;cid=78718">Chapter 1</a></td></tr>
+				<tr><td class="ccss"><a href="/modules/article/reader.php?aid=2172&amp;cid=78719">Chapter 2</a></td></tr>
+				<tr><td class="ccss"><a href="reader.php?aid=2172">Index</a></td></tr>
+			</table>"#,
+			"https://www.wenku8.net/modules/article/reader.php?aid=2172",
+		)
+		.unwrap();
+		let chapters = parse_chapters(&html);
+		assert_eq!(chapters.len(), 2);
+		assert_eq!(
+			chapters[0].key,
+			"https://www.wenku8.net/modules/article/reader.php?aid=2172&cid=78719"
+		);
+		assert_eq!(
+			chapters[1].key,
+			"https://www.wenku8.net/modules/article/reader.php?aid=2172&cid=78718"
+		);
+		assert_eq!(chapters[1].title.as_deref(), Some("Volume 1 — Chapter 1"));
+		for url in [
+			"https://www.wenku8.net/novel/2/2172/78718.htm",
+			"http://www.wenku8.net/novel/2/2172/78718.htm?from=share#top",
+			"https://www.wenku8.net/modules/article/reader.php?cid=78718&aid=2172#top",
+		] {
+			let Some(DeepLinkResult::Chapter { manga_key, key }) =
+				Wenku8.handle_deep_link(url.into()).unwrap()
+			else {
+				panic!("expected chapter link");
+			};
+			assert_eq!(manga_key, "2172");
+			assert_eq!(key, chapters[1].key);
+		}
+	}
+
+	#[aidoku_test]
+	fn catalog_links_open_the_book_and_invalid_links_are_ignored() {
+		for path in [
+			"/novel/2/2172/index.htm",
+			"/modules/article/reader.php?aid=2172",
+			"/book/2172.htm",
+		] {
+			assert!(
+				matches!(Wenku8.handle_deep_link(format!("{BASE_URL}{path}")).unwrap(),
+				Some(DeepLinkResult::Manga { key }) if key == "2172")
+			);
+		}
+		for url in [
+			"https://www.wenku8.net/novel/2/2172/other.htm",
+			"https://www.wenku8.net/novel/2/2172/78718.htm/extra",
+			"https://www.wenku8.net/modules/article/reader.php?aid=2172&cid=invalid",
+			"https://www.wenku8.net.evil.test/novel/2/2172/78718.htm",
+		] {
+			assert!(Wenku8.handle_deep_link(url.into()).unwrap().is_none());
+		}
 	}
 
 	#[aidoku_test]
