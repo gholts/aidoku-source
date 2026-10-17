@@ -41,16 +41,9 @@ impl Source for Wenku8 {
 			))?
 		};
 
-		let mut entries = parse_grid(&html);
-		if entries.is_empty()
-			&& let Some(key) = detail_book_key(&html)
-			&& let Some(entry) = parse_detail(&html, &key)
-		{
-			entries.push(entry);
-		}
 		let next = page + 1;
 		Ok(MangaPageResult {
-			entries,
+			entries: parse_search_results(&html),
 			has_next_page: html
 				.select_first(format!("#pagelink a[href*='page={next}']"))
 				.is_some(),
@@ -259,6 +252,14 @@ fn is_cloudflare_challenge(html: &Document) -> bool {
 			.is_some_and(|title| title.contains("Just a moment"))
 }
 
+fn parse_search_results(html: &Document) -> Vec<Manga> {
+	if let Some(entry) = detail_book_key(html).and_then(|key| parse_detail(html, &key)) {
+		vec![entry]
+	} else {
+		parse_grid(html)
+	}
+}
+
 fn parse_grid(html: &Document) -> Vec<Manga> {
 	let mut entries = Vec::new();
 	for item in html.select("table.grid td > div").into_iter().flatten() {
@@ -330,11 +331,25 @@ fn parse_detail(html: &Document, key: &str) -> Option<Manga> {
 			.map(|url| url.replace("http://", "https://")),
 		authors: field_value(html, "小说作者").map(|author| vec![author]),
 		description: html
-			.select("#content span")
+			.select("#content span.hottext")
 			.into_iter()
 			.flatten()
-			.filter_map(|element| element.text())
-			.find(|text| text.len() > 80),
+			.find(|element| {
+				element
+					.text()
+					.is_some_and(|text| text.starts_with("内容简介"))
+			})
+			.and_then(|label| label.next())
+			.and_then(|element| {
+				if element.tag_name().as_deref() == Some("br") {
+					element.next()
+				} else {
+					Some(element)
+				}
+			})
+			.filter(|element| element.tag_name().as_deref() == Some("span"))
+			.and_then(|element| element.text())
+			.filter(|text| !text.is_empty()),
 		url: Some(format!("{BASE_URL}/book/{key}.htm")),
 		tags: (!tags.is_empty()).then_some(tags),
 		status: if status_text.contains("已完") || status_text.contains("完結") {
@@ -581,6 +596,69 @@ mod tests {
 		] {
 			assert!(Wenku8.handle_deep_link(url.into()).unwrap().is_none());
 		}
+	}
+
+	#[aidoku_test]
+	fn description_comes_from_its_label_not_text_length() {
+		let title = "A long novel title ".repeat(7);
+		let tags = "A long tag list ".repeat(7);
+		for description in ["Short synopsis.", ""] {
+			let fixture = format!(
+				r#"<div id="content">
+				<span><b>{title}</b></span>
+				<span class="hottext"><b>{tags}</b></span><br>
+				<span class="hottext">内容简介：</span><br><span>{description}</span>
+			</div>"#
+			);
+			let html = parse_html_data(fixture.as_bytes(), BASE_URL).unwrap();
+			assert_eq!(
+				parse_detail(&html, "2172").unwrap().description.as_deref(),
+				(!description.is_empty()).then_some(description)
+			);
+		}
+		let html = parse_html_data(
+			format!("<div id='content'><span><b>{title}</b></span></div>").as_bytes(),
+			BASE_URL,
+		)
+		.unwrap();
+		assert!(parse_detail(&html, "2172").unwrap().description.is_none());
+	}
+
+	#[aidoku_test]
+	fn parses_listing_cover_link_title() {
+		let url = "https://www.wenku8.net/modules/article/toplist.php?sort=lastupdate&page=1";
+		let html = parse_html_data(
+			br#"<table class="grid"><tr><td><div>
+				<div><a href="/book/2172.htm" title="Novel"><img src="/image/2172s.jpg"></a></div>
+				<div><b><a href="/book/2172.htm" title="Novel">Novel</a></b>
+				<p><a href="/book/2172.htm">Read</a> | <a href="/modules/article/uservote.php?id=2172">Vote</a></p></div>
+			</div></td></tr></table>"#,
+			url,
+		)
+		.unwrap();
+		assert!(validate_html(&html, url).is_ok());
+		let entries = parse_search_results(&html);
+		assert_eq!(entries.len(), 1);
+		assert_eq!(entries[0].key, "2172");
+		assert_eq!(entries[0].title, "Novel");
+	}
+
+	#[aidoku_test]
+	fn parses_redirected_search_detail_before_recommendations() {
+		let html = parse_html_data(
+			br#"<div id="content"><span><b>Matched novel</b></span>
+				<a href="/modules/article/uservote.php?id=1">Vote</a>
+				<table class="grid"><tr><td><div>
+					<a href="/book/2.htm" title="Recommended novel">Recommended novel</a>
+				</div></td></tr></table>
+			</div>"#,
+			"https://www.wenku8.net/book/1.htm",
+		)
+		.unwrap();
+		let entries = parse_search_results(&html);
+		assert_eq!(entries.len(), 1);
+		assert_eq!(entries[0].key, "1");
+		assert_eq!(entries[0].title, "Matched novel");
 	}
 
 	#[aidoku_test]
