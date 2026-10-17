@@ -1,0 +1,19 @@
+[
+	{
+		"type": "group",
+		"title": "Account and Verification",
+		"footer": "If the website requests login or Cloudflare verification, complete it here, then reload the book list.",
+		"items": [
+			{
+				"type": "login",
+				"key": "verification",
+				"title": "Login and Verification",
+				"logoutTitle": "Clear Website Cookies",
+				"method": "web",
+				"url": "https://www.wenku8.net",
+				"clearCookiesOnLogOut": true,
+				"refreshes": ["content"]
+			}
+		]
+	}
+]

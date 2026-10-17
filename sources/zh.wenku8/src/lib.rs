@@ -14,7 +14,6 @@ use aidoku::{
 use encoding_rs::GBK;
 
 const BASE_URL: &str = "https://www.wenku8.net";
-const USER_AGENT: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
 
 struct Wenku8;
 
@@ -131,10 +130,7 @@ impl ImageRequestProvider for Wenku8 {
 		url: String,
 		_context: Option<aidoku::PageContext>,
 	) -> Result<Request> {
-		Ok(Request::get(url)?
-			.header("Cookie", "jieqiUserCharset=utf-8")
-			.header("Referer", BASE_URL)
-			.header("User-Agent", USER_AGENT))
+		Ok(Request::get(url)?.header("Referer", BASE_URL))
 	}
 }
 
@@ -174,27 +170,21 @@ impl DeepLinkHandler for Wenku8 {
 	}
 }
 
-fn configured_request(request: Request) -> Request {
-	request
+fn request_html(url: &str) -> Result<Document> {
+	let response = Request::get(url)?
 		.header("Accept", "text/html,application/xhtml+xml")
 		.header("Accept-Language", "zh-TW,zh;q=0.9")
 		.header("Cookie", "jieqiUserCharset=utf-8")
 		.header("Referer", BASE_URL)
-		.header("User-Agent", USER_AGENT)
-}
-
-fn request_html(url: &str) -> Result<Document> {
-	response_html(configured_request(Request::get(url)?))
-}
-
-fn response_html(request: Request) -> Result<Document> {
-	let response = request.send()?;
+		.send()?;
 	if response.status_code() == 403
 		|| response
 			.get_header("cf-mitigated")
 			.is_some_and(|value| value == "challenge")
 	{
-		bail!("Cloudflare blocked the Wenku8 request");
+		bail!(
+			"Wenku8: complete Cloudflare verification in source settings > Login and Verification, then retry"
+		);
 	}
 	if !(200..400).contains(&response.status_code()) {
 		bail!("Wenku8 HTTP {}", response.status_code());
@@ -202,10 +192,26 @@ fn response_html(request: Request) -> Result<Document> {
 	let url = response.get_url().unwrap_or_else(|| BASE_URL.into());
 	let data = response.get_data()?;
 	let html = parse_html_data(&data, &url)?;
-	if is_cloudflare_challenge(&html) {
-		bail!("Cloudflare blocked the Wenku8 request");
-	}
+	validate_html(&html, &url)?;
 	Ok(html)
+}
+
+fn validate_html(html: &Document, url: &str) -> Result<()> {
+	if is_cloudflare_challenge(html) {
+		bail!(
+			"Wenku8: complete Cloudflare verification in source settings > Login and Verification, then retry"
+		);
+	}
+	if url
+		.split(['?', '#'])
+		.next()
+		.is_some_and(|url| url.ends_with("/login.php"))
+	{
+		bail!(
+			"Wenku8 redirected to login; open source settings > Login and Verification, then retry"
+		);
+	}
+	Ok(())
 }
 
 fn parse_html_data(data: &[u8], url: &str) -> Result<Document> {
@@ -503,5 +509,22 @@ mod tests {
 			chapters[0].key,
 			"https://www.wenku8.net/modules/article/reader.php?aid=1&cid=2"
 		);
+	}
+
+	#[aidoku_test]
+	fn rejects_login_redirect_instead_of_empty_results() {
+		let url = "https://www.wenku8.net/login.php?jumpurl=toplist.php";
+		let html = parse_html_data(b"<html><body>Login</body></html>", url).unwrap();
+		assert!(validate_html(&html, url).is_err());
+	}
+
+	#[aidoku_test]
+	fn rejects_cloudflare_html_even_with_success_status() {
+		let html = parse_html_data(
+			b"<html><head><title>Just a moment...</title></head></html>",
+			BASE_URL,
+		)
+		.unwrap();
+		assert!(validate_html(&html, BASE_URL).is_err());
 	}
 }
