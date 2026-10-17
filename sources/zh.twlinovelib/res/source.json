@@ -2,7 +2,7 @@
 	"info": {
 		"id": "zh.twlinovelib",
 		"name": "嗶哩輕小說",
-		"version": 4,
+		"version": 5,
 		"url": "https://tw.linovelib.com",
 		"contentRating": 1,
 		"languages": ["zh"],

@@ -4,10 +4,12 @@ use aidoku::{
 	Chapter, ContentRating, DeepLinkHandler, DeepLinkResult, FilterValue, Manga, MangaPageResult,
 	MangaStatus, Page, PageContent, Result, Source,
 	alloc::{String, Vec, string::ToString, vec},
+	helpers::uri::encode_uri_component,
 	imports::{
-		html::{Element, Html, Kind},
+		html::{Document, Element, Html, Kind},
+		js::WebView,
 		net::{Request, TimeUnit, set_rate_limit},
-		std::send_partial_result,
+		std::{send_partial_result, sleep},
 	},
 	prelude::*,
 };
@@ -15,6 +17,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 
 const BASE_URL: &str = "https://tw.linovelib.com";
 const API_URL: &str = "https://lnovel.animes.garden";
+const SEARCH_URL: &str = "https://cse.google.com/cse?cx=649de34f5e63448cb&hl=en";
 const PAGE_SIZE: usize = 30;
 
 struct TwLinovelib;
@@ -42,22 +45,7 @@ impl Source for TwLinovelib {
 			});
 		}
 
-		let needle = query.trim().to_lowercase();
-		let matches = get_api::<Vec<ApiNovel>>("/bili/novels")?
-			.into_iter()
-			.filter(|novel| novel_matches(novel, &needle))
-			.collect::<Vec<_>>();
-		let start = (page - 1) * PAGE_SIZE;
-		let has_next_page = matches.len() > start + PAGE_SIZE;
-		Ok(MangaPageResult {
-			entries: matches
-				.iter()
-				.skip(start)
-				.take(PAGE_SIZE)
-				.map(novel_to_manga)
-				.collect(),
-			has_next_page,
-		})
+		search(query.trim(), page)
 	}
 
 	fn get_manga_update(
@@ -152,16 +140,97 @@ fn get_api<T: DeserializeOwned + Default>(path: &str) -> Result<T> {
 		.ok_or_else(|| error!("Linovelib API data missing"))
 }
 
-fn novel_matches(novel: &ApiNovel, needle: &str) -> bool {
-	novel.name.to_lowercase().contains(needle)
-		|| novel
-			.authors
-			.iter()
-			.any(|author| author.name.to_lowercase().contains(needle))
-		|| novel
-			.labels
-			.iter()
-			.any(|label| label.to_lowercase().contains(needle))
+fn search_url(query: &str, page: usize) -> String {
+	let query = encode_uri_component(format!(
+		"site:tw.linovelib.com/novel/ {query} more:pagemap:metatags-og_type:novel"
+	));
+	format!("{SEARCH_URL}&q={query}#gsc.tab=0&gsc.q={query}&gsc.page={page}")
+}
+
+fn search(query: &str, page: usize) -> Result<MangaPageResult> {
+	let url = search_url(query, page);
+	let view = WebView::new();
+	view.load(Request::get(&url)?)?;
+	let ready_html = format!(
+		r#"(() => {{
+		const results = document.querySelector('.gsc-results.gsc-webResult');
+		if (!results || document.querySelector('.gsc-loading-resultsRoot')) return '';
+		const current = results.querySelector('.gsc-cursor-current-page');
+		const empty = results.querySelector('.gs-no-results-result');
+		const entries = results.querySelector('.gsc-expansionArea .gsc-result');
+		if (empty || (entries && (current ? current.textContent.trim() === '{page}' : {page} === 1))) return results.outerHTML;
+		return '';
+	}})()"#
+	);
+	// Loading can fail without signalling wait_for_load; keep the wait bounded.
+	for _ in 0..30 {
+		sleep(1);
+		let html = view.eval(&ready_html).unwrap_or_default();
+		if !html.is_empty() {
+			return parse_search_results(&Html::parse_with_url(html.as_bytes(), &url)?, page);
+		}
+	}
+	bail!(
+		"Linovelib search did not load; open its website search to check verification, then retry"
+	)
+}
+
+fn parse_search_results(html: &Document, page: usize) -> Result<MangaPageResult> {
+	let mut entries = Vec::new();
+	for result in html
+		.select(".gsc-expansionArea .gsc-webResult.gsc-result")
+		.into_iter()
+		.flatten()
+	{
+		let Some(link) = result.select_first("a.gs-title[href]") else {
+			continue;
+		};
+		let Some(url) = link.attr("href") else {
+			continue;
+		};
+		let Some(key) = url
+			.strip_prefix(BASE_URL)
+			.or_else(|| url.strip_prefix("http://tw.linovelib.com"))
+			.and_then(|path| path.strip_prefix("/novel/"))
+			.and_then(|path| path.split(['/', '?', '#']).next())
+			.map(|key| key.trim_end_matches(".html"))
+			.filter(|key| is_id(key))
+		else {
+			continue;
+		};
+		if entries.iter().any(|entry: &Manga| entry.key == key) {
+			continue;
+		}
+		let title = link.text().unwrap_or_default();
+		if title.is_empty() {
+			continue;
+		}
+		entries.push(Manga {
+			key: key.into(),
+			title,
+			cover: result
+				.select_first("img.gs-image")
+				.and_then(|image| image.attr("abs:src")),
+			description: result
+				.select_first(".gs-snippet")
+				.and_then(|snippet| snippet.text()),
+			url: Some(format!("{BASE_URL}/novel/{key}.html")),
+			content_rating: ContentRating::Suggestive,
+			..Default::default()
+		});
+	}
+	if entries.is_empty() && html.select_first(".gs-no-results-result").is_none() {
+		bail!("Linovelib search returned an unexpected page");
+	}
+	Ok(MangaPageResult {
+		entries,
+		has_next_page: html
+			.select(".gsc-cursor-page")
+			.into_iter()
+			.flatten()
+			.filter_map(|element| element.text()?.trim().parse::<usize>().ok())
+			.any(|number| number > page),
+	})
 }
 
 fn novel_to_manga(novel: &ApiNovel) -> Manga {
@@ -474,5 +543,58 @@ mod tests {
 			..Default::default()
 		};
 		assert!(fetch_chapters(&novel).is_err());
+	}
+
+	#[aidoku_test]
+	fn searches_uncached_books_and_groups_chapter_links_by_book() {
+		let html = Html::parse_with_url(br#"<div class="gsc-expansionArea">
+			<div class="gsc-webResult gsc-result">
+				<a class="gs-title" href="https://tw.linovelib.com/novel/5455.html">World Order</a>
+				<img class="gs-image" src="https://images.example/cover.jpg">
+				<div class="gs-snippet">Novel synopsis</div>
+			</div>
+			<div class="gsc-webResult gsc-result"><a class="gs-title" href="http://tw.linovelib.com/novel/5455.html">Duplicate</a></div>
+			<div class="gsc-webResult gsc-result"><a class="gs-title" href="https://tw.linovelib.com/novel/5455/341358.html">Chapter</a></div>
+			<div class="gsc-webResult gsc-result"><a class="gs-title" href="https://tw.linovelib.com/novel/5243/catalog">Another novel</a></div>
+			<div class="gsc-webResult gsc-result"><a class="gs-title" href="https://tw.linovelib.com.evil.test/novel/1.html">Unrelated</a></div>
+		</div><div class="gsc-cursor-page">1</div><div class="gsc-cursor-page">2</div>"#, SEARCH_URL).unwrap();
+		let result = parse_search_results(&html, 1).unwrap();
+		assert_eq!(result.entries.len(), 2);
+		assert_eq!(result.entries[0].key, "5455");
+		assert_eq!(result.entries[0].title, "World Order");
+		assert_eq!(result.entries[1].key, "5243");
+		assert_eq!(
+			result.entries[1].url.as_deref(),
+			Some("https://tw.linovelib.com/novel/5243.html")
+		);
+		assert_eq!(
+			result.entries[0].description.as_deref(),
+			Some("Novel synopsis")
+		);
+		assert!(result.has_next_page);
+		assert!(!parse_search_results(&html, 2).unwrap().has_next_page);
+	}
+
+	#[aidoku_test]
+	fn distinguishes_no_results_from_a_failed_search() {
+		let empty = Html::parse_with_url(
+			b"<div class='gs-no-results-result'>No results</div>",
+			SEARCH_URL,
+		)
+		.unwrap();
+		let result = parse_search_results(&empty, 1).unwrap();
+		assert!(result.entries.is_empty());
+		assert!(!result.has_next_page);
+		let blocked =
+			Html::parse_with_url(b"<html><title>Sorry...</title></html>", SEARCH_URL).unwrap();
+		assert!(parse_search_results(&blocked, 1).is_err());
+	}
+
+	#[aidoku_test]
+	fn search_query_cannot_change_url_parameters() {
+		let url = search_url("A&B #日本", 2);
+		assert!(url.contains("A%26B%20%23%E6%97%A5%E6%9C%AC"));
+		assert_eq!(url.matches('#').count(), 1);
+		assert!(url.ends_with("&gsc.page=2"));
 	}
 }
